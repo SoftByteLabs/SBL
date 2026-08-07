@@ -1,0 +1,17 @@
+[project]
+name = "sbl-nodes"
+version = "1.0.0"
+description = "Utility custom nodes for ComfyUI, including prompt, resolution, math, seed/noise, and model-specific resolution helpers."
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/SoftByteLabs/SBL-Nodes"
+"Bug Tracker" = "https://github.com/SoftByteLabs/SBL-Nodes/issues"
+
+[tool.comfy]
+PublisherId = "sbl"
+DisplayName = "SBL"
