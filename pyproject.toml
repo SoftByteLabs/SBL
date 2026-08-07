@@ -9,8 +9,8 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/SoftByteLabs/SBL-Nodes"
-"Bug Tracker" = "https://github.com/SoftByteLabs/SBL-Nodes/issues"
+Repository = "https://github.com/SoftByteLabs/SBL"
+"Bug Tracker" = "https://github.com/SoftByteLabs/SBL/issues"
 
 [tool.comfy]
 PublisherId = "sbl"
