@@ -1,0 +1,9 @@
+{
+  "SBL_GlobalPrompt": "Outputs reusable positive and negative prompt strings.",
+  "SBL_Resolution": "Provides resolution presets, aspect-ratio groups, custom dimensions, and multiple-of snapping.",
+  "SBL_MathEvaluator": "Evaluates mathematical expressions and multi-line math programs with numeric outputs.",
+  "SBL_Seed": "Outputs a seed and ComfyUI noise object with a frontend randomize control.",
+  "SBL_Qwen2512ResT2I": "Provides preset text-to-image resolutions for Qwen 2512 image generation workflows.",
+  "SBL_ZiTResT2I": "Provides preset text-to-image resolutions for ZiT image generation workflows.",
+  "SBL_MathScratchpadNode": "Interactive multi-line mathematical scratchpad with variables, functions, loops, comprehensions, and displayed output."
+}
