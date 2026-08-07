@@ -1,7 +1,7 @@
-import sys
-import io
 from aiohttp import web
 from server import PromptServer
+
+from .MathEvaluatorNode import SafeMathInterpreter
 
 
 class MathScratchpadNode:
@@ -25,24 +25,18 @@ class MathScratchpadNode:
         return {}
 
 
-# ── Custom API route ──────────────────────────────────────────────────────────
 @PromptServer.instance.routes.post("/sbl/scratchpad/evaluate")
 async def scratchpad_evaluate(request):
     try:
         data = await request.json()
-        src  = data.get("expressions", "")
-    except Exception as e:
-        return web.json_response({"error": f"Bad request: {e}"}, status=400)
-
-    buffer = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = buffer
+        source = data.get("expressions", "")
+    except Exception as ex:
+        return web.json_response({"error": f"Bad request: {ex}"}, status=400)
 
     try:
-        exec(src, {})
+        interpreter = SafeMathInterpreter(capture_output=True)
+        interpreter.run(source)
+        output = interpreter.get_output()
+        return web.json_response({"output": output})
     except Exception as ex:
-        print(f"ERROR: {ex}")
-    finally:
-        sys.stdout = old_stdout
-
-    return web.json_response({"output": buffer.getvalue()})
+        return web.json_response({"error": str(ex)}, status=400)
