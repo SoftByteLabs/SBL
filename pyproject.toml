@@ -1,5 +1,5 @@
 [project]
-name = "sbl-nodes"
+name = "SBL"
 version = "1.0.0"
 description = "Utility custom nodes for ComfyUI, including prompt, resolution, math, seed/noise, and model-specific resolution helpers."
 requires-python = ">=3.10"
