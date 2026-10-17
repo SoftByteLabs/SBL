@@ -5,13 +5,16 @@ from .MathEvaluatorNode import SafeMathInterpreter
 
 
 class MathScratchpadNode:
+    DESCRIPTION = "Interactive math scratchpad. Enter restricted Python-style calculations and click Evaluate to see printed results without generating a workflow output."
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "expressions": ("STRING", {
                     "multiline": True,
-                    "default": "import math\nt = 12\nrawframes = t * 24 + 1\nltxframes = 8 * math.floor((rawframes - 1) / 8)\nprint(ltxframes + 1)\nprint(ltxframes / 24)\nprint(ltxframes / 8)"
+                    "default": "import math\nt = 12\nrawframes = t * 24 + 1\nltxframes = 8 * math.floor((rawframes - 1) / 8)\nprint(ltxframes + 1)\nprint(ltxframes / 24)\nprint(ltxframes / 8)",
+                    "tooltip": "Enter math expressions, variables, functions, and print() calls. Click Evaluate to display the results in the output area below."
                 }),
             }
         }
@@ -19,7 +22,6 @@ class MathScratchpadNode:
     RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "SBL"
-    OUTPUT_NODE = True
 
     def noop(self, expressions):
         return {}

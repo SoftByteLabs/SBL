@@ -36,6 +36,7 @@ app.registerExtension({
             // Input textarea
             const inputEl = document.createElement("textarea");
             inputEl.spellcheck = false;
+            inputEl.title = "Write restricted Python-style math, variables, loops and print() statements. Click Evaluate to see results.";
             inputEl.value = "import math\nt = 12\nrawframes = t * 24 + 1\nltxframes = 8 * math.floor((rawframes - 1) / 8)\nprint(ltxframes + 1)\nprint(ltxframes / 24)\nprint(ltxframes / 8)";
             Object.assign(inputEl.style, {
                 flex:        "1 1 auto",
@@ -62,9 +63,12 @@ app.registerExtension({
                 borderBottom: "1px solid #666",
             });
 
+            splitter.title = "Drag up or down to resize the output area.";
+
             // Output textarea
             const outputEl = document.createElement("textarea");
             outputEl.readOnly = true;
+            outputEl.title = "Read-only output from Evaluate, including printed values or error messages.";
             outputEl.value = "Click ⚡ Evaluate...";
             Object.assign(outputEl.style, {
                 flex:        `0 0 ${node.properties.outputHeight}px`,
@@ -117,6 +121,10 @@ app.registerExtension({
                 setValue(val) { inputEl.value = val ?? ""; },
             });
 
+            if (domWidget) {
+                domWidget.options = { ...domWidget.options, tooltip: "Math expression editor and results panel. Evaluate runs the calculations without queueing a generation." };
+            }
+
             // Keep widget value in sync as user types (for workflow save/load)
             inputEl.addEventListener("input", () => {
                 if (domWidget) domWidget.value = inputEl.value;
@@ -124,7 +132,7 @@ app.registerExtension({
 
             // Native ComfyUI button widget — same pattern as ResolutionNode's Swap button.
             // Renders on canvas, no pointer-event issues.
-            node.addWidget("button", "⚡ Evaluate", null, async () => {
+            const evaluateWidget = node.addWidget("button", "⚡ Evaluate", null, async () => {
                 outputEl.value = "Running...";
                 outputEl.style.color = "#aaa";
                 try {
@@ -141,6 +149,9 @@ app.registerExtension({
                     outputEl.style.color = "#ff4444";
                 }
             });
+            if (evaluateWidget) {
+                evaluateWidget.options = { ...evaluateWidget.options, tooltip: "Run the scratchpad expressions and show the result below without queueing ComfyUI." };
+            }
 
             // Restore splitter position after workflow load
             const onConfigure = node.onConfigure;

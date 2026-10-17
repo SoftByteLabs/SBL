@@ -1,7 +1,7 @@
 [project]
 name = "SBL"
-version = "1.0.3"
-description = "Utility custom nodes for ComfyUI, including prompt, resolution, math, seed/noise, and model-specific resolution helpers."
+version = "1.0.4"
+description = "Utility custom nodes for ComfyUI: prompts, flexible resolution with megapixel limits, safe math, seed/noise and YuE2 instrumental preparation."
 requires-python = ">=3.10"
 dependencies = []
 license = {file = "LICENSE"}

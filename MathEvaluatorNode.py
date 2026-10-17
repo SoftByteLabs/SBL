@@ -1,6 +1,7 @@
 import ast
 import cmath
 import math
+import re
 import statistics
 from decimal import Decimal
 from fractions import Fraction
@@ -52,7 +53,8 @@ class SafeMathInterpreter:
     MAX_POWER_EXPONENT = 10_000
     MAX_SHIFT = 10_000
     MAX_OUTPUT_CHARS = 100_000
-    MAX_INT_BITS = 1_000_000
+    MAX_INT_BITS = 131_072
+    MAX_DECIMAL_DIGITS = 100_000
 
     def __init__(self, initial_variables=None, capture_output=False):
         self.output = []
@@ -230,10 +232,10 @@ class SafeMathInterpreter:
         return result
 
     def _safe_pow(self, base, exponent, modulus=None):
-        self._guard_power(exponent)
+        self._guard_numeric_operation(base, exponent, power=True)
         if modulus is None:
-            return pow(base, exponent)
-        return pow(base, exponent, modulus)
+            return self._check_value(pow(base, exponent))
+        return self._check_value(pow(base, exponent, modulus))
 
     def _safe_factorial(self, value):
         value = int(value)
@@ -254,11 +256,46 @@ class SafeMathInterpreter:
             k = int(k)
         if n < 0 or n > 100_000 or (k is not None and k < 0):
             raise SafeMathError("perm() arguments are outside the allowed range.")
+        effective_k = n if k is None else min(k, n)
+        if n > 1 and effective_k * math.log2(n) > self.MAX_INT_BITS:
+            raise SafeMathError("perm() result would be too large.")
         return math.perm(n, k)
 
     def _guard_power(self, exponent):
-        if isinstance(exponent, (int, float)) and abs(exponent) > self.MAX_POWER_EXPONENT:
+        # Fraction and Decimal are numeric exponents too. Avoid only checking
+        # built-in int/float; that previously allowed enormous Fraction powers.
+        if isinstance(exponent, complex):
+            if not math.isfinite(exponent.real) or not math.isfinite(exponent.imag):
+                raise SafeMathError("Exponent must be finite.")
+            size = abs(exponent)
+        elif isinstance(exponent, (int, float, Fraction, Decimal)):
+            try:
+                size = abs(exponent)
+            except (OverflowError, ValueError):
+                raise SafeMathError("Exponent is outside the allowed range.") from None
+        else:
+            raise SafeMathError("Exponent must be a number.")
+        if size > self.MAX_POWER_EXPONENT or (isinstance(size, float) and not math.isfinite(size)):
             raise SafeMathError("Exponent is too large.")
+
+    def _guard_numeric_operation(self, left, right, power=False):
+        # Reject huge integer/fraction arithmetic before constructing it.
+        def bits(value):
+            if isinstance(value, int):
+                return value.bit_length()
+            if isinstance(value, Fraction):
+                return max(value.numerator.bit_length(), value.denominator.bit_length())
+            if isinstance(value, Decimal):
+                return len(value.as_tuple().digits) * 4
+            return 0
+        left_bits, right_bits = bits(left), bits(right)
+        if power:
+            self._guard_power(right)
+            if isinstance(right, (int, Fraction, Decimal)):
+                if left_bits * int(abs(right)) > self.MAX_INT_BITS * 2:
+                    raise SafeMathError("Power result would be too large.")
+        elif left_bits + right_bits > self.MAX_INT_BITS * 2:
+            raise SafeMathError("Arithmetic result would be too large.")
 
     def _consume_iterations(self, amount=1):
         self.total_iterations += amount
@@ -268,6 +305,11 @@ class SafeMathInterpreter:
     def _check_value(self, value):
         if isinstance(value, int) and value.bit_length() > self.MAX_INT_BITS:
             raise SafeMathError("Integer value is too large.")
+        if isinstance(value, Fraction) and max(value.numerator.bit_length(), value.denominator.bit_length()) > self.MAX_INT_BITS:
+            raise SafeMathError("Fraction value is too large.")
+        if isinstance(value, Decimal):
+            if len(value.as_tuple().digits) > self.MAX_DECIMAL_DIGITS:
+                raise SafeMathError("Decimal value has too many digits.")
         if isinstance(value, str) and len(value) > self.MAX_OUTPUT_CHARS:
             raise SafeMathError("String value is too large.")
         if isinstance(value, (list, tuple, set, dict, range)) and len(value) > self.MAX_COLLECTION_ITEMS:
@@ -289,7 +331,15 @@ class SafeMathInterpreter:
 
     def _exec_statement(self, node):
         if isinstance(node, ast.Expr):
-            self._eval_expr(node.value)
+            result = self._eval_expr(node.value)
+            # The Scratchpad shows standalone expressions without requiring
+            # print(...). A print() call already produced its own output.
+            if self.capture_output and result is not None and not (
+                isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "print"
+            ):
+                self._safe_print(self._check_value(result))
             return
 
         if isinstance(node, ast.Assign):
@@ -512,6 +562,9 @@ class SafeMathInterpreter:
                     formatted = self._eval_expr(value.value)
                     if value.format_spec is not None:
                         spec = self._eval_expr(value.format_spec)
+                        # Avoid a maliciously large width/precision allocation.
+                        if len(spec) > 100 or any(int(n) > 10000 for n in re.findall(r"\d+", spec)):
+                            raise SafeMathError("Format width or precision is too large.")
                         pieces.append(format(formatted, spec))
                     else:
                         pieces.append(str(formatted))
@@ -575,6 +628,7 @@ class SafeMathInterpreter:
             result = left - right
         elif isinstance(op, ast.Mult):
             self._guard_sequence_repeat(left, right)
+            self._guard_numeric_operation(left, right)
             result = left * right
         elif isinstance(op, ast.Div):
             result = left / right
@@ -583,7 +637,7 @@ class SafeMathInterpreter:
         elif isinstance(op, ast.Mod):
             result = left % right
         elif isinstance(op, ast.Pow):
-            self._guard_power(right)
+            self._guard_numeric_operation(left, right, power=True)
             result = left ** right
         elif isinstance(op, ast.BitAnd):
             result = left & right
@@ -594,6 +648,8 @@ class SafeMathInterpreter:
         elif isinstance(op, ast.LShift):
             if not isinstance(right, int) or right < 0 or right > self.MAX_SHIFT:
                 raise SafeMathError("Left shift amount is outside the allowed range.")
+            if isinstance(left, int) and left.bit_length() + right > self.MAX_INT_BITS:
+                raise SafeMathError("Shift would produce an oversized integer.")
             result = left << right
         elif isinstance(op, ast.RShift):
             if not isinstance(right, int) or right < 0 or right > self.MAX_SHIFT:
@@ -693,15 +749,33 @@ class SafeMathInterpreter:
 
 
 class MathEvaluatorNode:
+    DESCRIPTION = (
+        "Evaluate restricted Python-style math expressions. Optional w/x float and y/z integer sockets "
+        "provide inputs; assign a and b to obtain both float and integer outputs."
+    )
+    OUTPUT_TOOLTIPS = (
+        "Variable a converted to a float.",
+        "Variable b converted to a float.",
+        "Variable a converted to an integer (truncates toward zero).",
+        "Variable b converted to an integer (truncates toward zero).",
+    )
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "expressions": ("STRING", {
                     "multiline": True,
-                    "default": "a = w/x\nb = y+z"
+                    "default": "a = w + x\nb = y + z",
+                    "tooltip": "Write Python-style mathematical statements using w, x, y, z as optional inputs. Set a and b for the four numeric outputs. Errors return zeros."
                 }),
-            }
+            },
+            "optional": {
+                "w": ("FLOAT", {"forceInput": True, "tooltip": "Optional float w. Defaults to 0.0 when disconnected."}),
+                "x": ("FLOAT", {"forceInput": True, "tooltip": "Optional float x. Defaults to 0.0 when disconnected."}),
+                "y": ("INT", {"forceInput": True, "tooltip": "Optional integer y. Defaults to 0 when disconnected."}),
+                "z": ("INT", {"forceInput": True, "tooltip": "Optional integer z. Defaults to 0 when disconnected."}),
+            },
         }
 
     RETURN_TYPES = ("FLOAT", "FLOAT", "INT", "INT")

@@ -83,39 +83,109 @@ app.registerExtension({
                 Math.max(1, parseInt(getCurrentMultiple(), 10) || 1);
 
             const parsePreset = (presetStr) => {
-                // Accept "1920x1080 (label)", "1920 x 1080", and ZiT-style "1024 | 1024×1024 (1:1)"
+                // Accept "1920x1080 (label)" and "1920 x 1080".
                 // Handles both ASCII 'x'/'X' and Unicode '×' (U+00D7) as separators.
                 const m = String(presetStr).match(/(\d+)\s*[xX×]\s*(\d+)/i);
                 if (!m) return null;
                 return { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
             };
 
-            const pushDimensionWidget = (triggeringWidget) => {
-                if (!triggeringWidget) return;
+            // Compute the actual output without modifying the user's selected size.
+            // This matches ResolutionNode._limit_megapixels in Python.
+            const limitMegapixels = (width, height, multiple, maxMP) => {
+                const limit = (Number(maxMP) || 0) * 1_000_000;
+                if (limit <= 0 || width * height <= limit) return { w: width, h: height };
 
-                const correspondingOutput = node.outputs?.find(output => output.name === triggeringWidget.name);
-                if (!correspondingOutput) return;
+                const ratio = width / height;
+                const scale = Math.sqrt(limit / (width * height));
+                const targetW = width * scale;
+                const targetH = height * scale;
 
-                if (correspondingOutput.links && correspondingOutput.links.length > 0) {
+                const findBest = (step) => {
+                    const baseW = Math.floor(targetW / step);
+                    const baseH = Math.floor(targetH / step);
+                    const widthCenters = [baseW];
+                    const heightCenters = [baseH];
+                    if (targetH < Math.max(16, step)) {
+                        widthCenters.push(Math.floor(Math.min(width, limit / Math.max(16, step)) / step));
+                        heightCenters.push(Math.ceil(16 / step));
+                    }
+                    if (targetW < Math.max(16, step)) {
+                        heightCenters.push(Math.floor(Math.min(height, limit / Math.max(16, step)) / step));
+                        widthCenters.push(Math.ceil(16 / step));
+                    }
+                    const nearby = centers => [...new Set(centers.flatMap(base =>
+                        Array.from({ length: 6 }, (_, i) => Math.max(1, base - 2 + i))
+                    ))].sort((a, b) => a - b);
+                    const widthSteps = nearby(widthCenters);
+                    const heightSteps = nearby(heightCenters);
+                    let best = null;
+                    for (const x of widthSteps) {
+                        const w = x * step;
+                        if (w < 16 || w > width) continue;
+                        for (const y of heightSteps) {
+                            const h = y * step;
+                            if (h < 16 || h > height) continue;
+                            const pixels = w * h;
+                            if (pixels > limit) continue;
+                            const ratioError = Math.log((w / h) / ratio);
+                            const areaGap = (limit - pixels) / limit;
+                            const score = (2 * ratioError) ** 2 + areaGap ** 2;
+                            const key = [score, Math.abs(ratioError), areaGap];
+                            if (!best || key.some((v, i) =>
+                                v < best.key[i] && key.slice(0, i).every((a, j) => a === best.key[j])
+                            )) best = { w, h, key };
+                        }
+                    }
+                    return best ? { w: best.w, h: best.h } : null;
+                };
+
+                const step = Math.max(1, parseInt(multiple, 10) || 1);
+                return findBest(step) || findBest(1) || { w: 16, h: 16 };
+            };
+
+            const getEffectiveDimensions = () => {
+                const widthWidget = getWidget("width");
+                const heightWidget = getWidget("height");
+                if (!widthWidget || !heightWidget) return null;
+                return limitMegapixels(
+                    Number(widthWidget.value),
+                    Number(heightWidget.value),
+                    getCurrentMultiple(),
+                    getWidget("max_megapixels")?.value,
+                );
+            };
+
+            const updateOutputLabel = (effective) => {
+                const widget = getWidget("max_megapixels");
+                if (!widget || !effective) return;
+                widget.label = `Max MP (out ${effective.w}×${effective.h})`;
+                node.setDirtyCanvas(true);
+            };
+
+            const pushDimensionWidget = (_triggeringWidget) => {
+                const effective = getEffectiveDimensions();
+                if (!effective) return;
+                updateOutputLabel(effective);
+
+                // Both effective outputs may change when just one input changes.
+                for (const outputName of ["width", "height"]) {
+                    const correspondingOutput = node.outputs?.find(o => o.name === outputName);
+                    if (!correspondingOutput?.links?.length) continue;
+                    const outputValue = outputName === "width" ? effective.w : effective.h;
                     for (const linkId of correspondingOutput.links) {
                         const link = app.graph.links[linkId];
                         if (!link) continue;
-
                         const targetNode = app.graph.getNodeById(link.target_id);
-                        if (!targetNode) continue;
-
-                        const targetInput = targetNode.inputs?.[link.target_slot];
+                        const targetInput = targetNode?.inputs?.[link.target_slot];
                         if (!targetInput) continue;
-
                         const foundWidget = targetNode.widgets?.find(w => w.name === targetInput.name);
                         if (!foundWidget) continue;
-
-                        foundWidget.value = triggeringWidget.value;
+                        foundWidget.value = outputValue;
                         targetNode.setDirtyCanvas(true);
-
                         if (foundWidget.callback) {
                             try {
-                                foundWidget.callback.call(foundWidget, foundWidget.value, app.graph, targetNode);
+                                foundWidget.callback.call(foundWidget, outputValue, app.graph, targetNode);
                             } catch (e) {
                                 console.error("Error calling target widget callback:", e);
                             }
@@ -167,20 +237,6 @@ app.registerExtension({
             // Preset groups and options (UI-side filtering)
             const PRESET_GROUPS = {
                 "Custom": ["Custom"],
-                "Qwen2512": [
-                    "1328x1328 (1:1)", "1664x928 (16:9)", "928x1664 (9:16)",
-                    "1472x1104 (4:3)", "1104x1472 (3:4)", "1584x1056 (3:2)", "1056x1584 (2:3)",
-                ],
-                "ZiT": [
-                    "1024x1024 (1:1)", "1152x896 (9:7)", "896x1152 (7:9)",
-                    "1152x864 (4:3)", "864x1152 (3:4)", "1248x832 (3:2)",
-                    "832x1248 (2:3)", "1280x720 (16:9)", "720x1280 (9:16)",
-                    "1344x576 (21:9)", "576x1344 (9:21)",
-                    "1280x1280 (1:1)", "1440x1120 (9:7)", "1120x1440 (7:9)",
-                    "1472x1104 (4:3)", "1104x1472 (3:4)", "1536x1024 (3:2)",
-                    "1024x1536 (2:3)", "1600x896 (16:9)", "896x1600 (9:16)",
-                    "1680x720 (21:9)", "720x1680 (9:21)",
-                ],
                 "1:1 (Square)": [
                     "64x64", "128x128", "192x192", "256x256", "320x320", "384x384", "448x448", 
                     "512x512", "640x640", "768x768", "1024x1024", "1536x1536", "2048x2048", "4096x4096",
@@ -226,7 +282,6 @@ app.registerExtension({
             const applyPreset = (presetWidget) => {
                 const widthWidget = getWidget("width");
                 const heightWidget = getWidget("height");
-                const multipleOfWidget = getWidget("multiple_of");
                 if (!presetWidget || !widthWidget || !heightWidget) return;
 
                 if (presetWidget.value === "Custom") return;
@@ -244,44 +299,11 @@ app.registerExtension({
 
                 node.__res_targetRatio = parsed.w / parsed.h;
 
-                // Map-based groups (Qwen2512, ZiT) have exact dims — skip snapping,
-                // just push the raw values downstream directly.
-                const aspectGroupWidget = getWidget("aspect_group");
-                const currentGroup = aspectGroupWidget ? aspectGroupWidget.value : "";
-                const mapGroups = ["Qwen2512", "ZiT"];
-
-                // Auto-set multiple_of to match the model's native multiple.
-                const groupMultiple = { "Qwen2512": "28", "ZiT": "32" };
-                if (groupMultiple[currentGroup] && multipleOfWidget) {
-                    withProgrammatic(() => {
-                        multipleOfWidget.value = groupMultiple[currentGroup];
-                    });
-                }
-
-                if (mapGroups.includes(currentGroup)) {
-                    for (const dimWidget of [widthWidget, heightWidget]) {
-                        const correspondingOutput = node.outputs?.find(o => o.name === dimWidget.name);
-                        if (!correspondingOutput?.links?.length) continue;
-                        for (const linkId of correspondingOutput.links) {
-                            const link = app.graph.links[linkId];
-                            if (!link) continue;
-                            const targetNode = app.graph.getNodeById(link.target_id);
-                            if (!targetNode) continue;
-                            const targetInput = targetNode.inputs?.[link.target_slot];
-                            if (!targetInput) continue;
-                            const foundWidget = targetNode.widgets?.find(w => w.name === targetInput.name);
-                            if (!foundWidget) continue;
-                            foundWidget.value = dimWidget.value;
-                            targetNode.setDirtyCanvas(true);
-                        }
-                    }
-                } else {
-                    updateDimensionsForClosestRatio(
-                        widthWidget,
-                        heightWidget,
-                        node.__res_targetRatio,
-                    );
-                }
+                updateDimensionsForClosestRatio(
+                    widthWidget,
+                    heightWidget,
+                    node.__res_targetRatio,
+                );
 
                 node.setDirtyCanvas(true);
             };
@@ -303,6 +325,7 @@ app.registerExtension({
                 const aspectGroupWidget = getWidget("aspect_group");
                 const presetWidget = getWidget("preset");
                 const multipleOfWidget = getWidget("multiple_of");
+                const maxMegapixelsWidget = getWidget("max_megapixels");
                 const widthWidget = getWidget("width");
                 const heightWidget = getWidget("height");
 
@@ -331,11 +354,9 @@ app.registerExtension({
                 };
 
 
-                // Add swap button — ZiT-aware: after swap, find the matching ZiT preset if applicable.
-                node.addWidget("button", "Swap width↔height", null, () => {
+                // Swap dimensions. Keep any selected aspect group when applicable.
+                const swapWidget = node.addWidget("button", "Swap width↔height", null, () => {
                     if (!widthWidget || !heightWidget) return;
-
-                    // Swap the values first.
                     withProgrammatic(() => {
                         const tmp = widthWidget.value;
                         widthWidget.value = heightWidget.value;
@@ -345,39 +366,24 @@ app.registerExtension({
                     });
                     node.__res_targetRatio = widthWidget.value / heightWidget.value;
 
-                    // If current group is ZiT or Qwen2512, search for a matching preset by swapped dims.
-                    const currentGroup = aspectGroupWidget ? aspectGroupWidget.value : "";
-                    if ((currentGroup === "ZiT" || currentGroup === "Qwen2512") && presetWidget) {
-                        const swappedW = widthWidget.value;
-                        const swappedH = heightWidget.value;
-                        const groupOptions = PRESET_GROUPS[currentGroup] || [];
-                        const match = groupOptions.find(label => {
-                            const p = parsePreset(label);
-                            return p && p.w === swappedW && p.h === swappedH;
-                        });
-                        if (match) {
-                            withProgrammatic(() => {
-                                presetWidget.value = match;
-                                presetWidget.options = presetWidget.options || {};
-                                presetWidget.options.values = groupOptions;
-                            });
-                            // Fire callback inside withProgrammatic so setCustomIfManual
-                            // doesn't reset the group back to Custom.
-                            withProgrammatic(() => {
-                                if (presetWidget.callback) {
-                                    try { presetWidget.callback.call(presetWidget, match); } catch (e) { }
-                                }
-                            });
-                            node.setDirtyCanvas(true);
-                            return;
-                        }
+                    const options = PRESET_GROUPS[aspectGroupWidget?.value] || [];
+                    const match = options.find(label => {
+                        const parsed = parsePreset(label);
+                        return parsed &&
+                            parsed.w === widthWidget.value &&
+                            parsed.h === heightWidget.value;
+                    });
+                    if (match && presetWidget) {
+                        withProgrammatic(() => { presetWidget.value = match; });
+                    } else {
+                        setCustomIfManual();
                     }
-
-                    // Fallback: no ZiT match — just push the raw swapped dims downstream.
-                    updateDimensionWidget(widthWidget, true);
-                    updateDimensionWidget(heightWidget, true);
+                    pushDimensionWidget(widthWidget);
                     node.setDirtyCanvas(true);
                 });
+                if (swapWidget) {
+                    swapWidget.options = { ...swapWidget.options, tooltip: "Exchange the selected width and height, preserving the pixel grid and recomputing capped outputs." };
+                }
 
                 node.computeSize();
                 node.setDirtyCanvas(true, true);
@@ -410,6 +416,15 @@ app.registerExtension({
                             updateDimensionWidget(widthWidget, true);
                             updateDimensionWidget(heightWidget, true);
                         }
+                    };
+                }
+
+                // Altering the limit recalculates outputs, never the selected size.
+                if (maxMegapixelsWidget) {
+                    const originalCallback = maxMegapixelsWidget.callback;
+                    maxMegapixelsWidget.callback = function (value) {
+                        if (originalCallback) originalCallback.call(this, value);
+                        pushDimensionWidget(widthWidget);
                     };
                 }
 
@@ -520,11 +535,21 @@ app.registerExtension({
                     node.__res_targetRatio = widthWidget.value / heightWidget.value;
                 }
 
-                // Initialize preset options based on group
+                // Previously saved workflows may contain retired model groups.
+                // Convert only those old selections to Custom on load.
                 if (aspectGroupWidget && presetWidget) {
-                    const initOptions = PRESET_GROUPS[aspectGroupWidget.value] || ["Custom"];
+                    if (!Object.prototype.hasOwnProperty.call(PRESET_GROUPS, aspectGroupWidget.value)) {
+                        aspectGroupWidget.value = "Custom";
+                        presetWidget.value = "Custom";
+                    }
+                    const initOptions = PRESET_GROUPS[aspectGroupWidget.value];
                     setPresetOptions(presetWidget, initOptions, false);
                 }
+
+                // Reflect the effective output immediately on load, including 0 MP.
+                const initialEffective = getEffectiveDimensions();
+                updateOutputLabel(initialEffective);
+                if (widthWidget) pushDimensionWidget(widthWidget);
 
                 // Group change -> filter preset dropdown
                 if (aspectGroupWidget && presetWidget) {

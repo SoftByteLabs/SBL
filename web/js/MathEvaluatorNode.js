@@ -9,25 +9,22 @@ app.registerExtension({
                 const r = oldOnNodeCreated?.apply(this, arguments);
                 const node = this;
 
-                // Define all inputs directly in JS
-                const typeMap = {
-                    w: "FLOAT",
-                    x: "FLOAT",
-                    y: "INT",
-                    z: "INT"
+                // w/x/y/z are now real Python INPUT_TYPES sockets. Re-label
+                // existing sockets only, avoiding duplicates when workflows load.
+                const labels = {
+                    w: "w (float)", x: "x (float)",
+                    y: "y (int)", z: "z (int)"
                 };
-
-                const labelMap = {
-                    w: "w (float)",
-                    x: "x (float)",
-                    y: "y (int)",
-                    z: "z (int)"
+                const tips = {
+                    w: "Optional float input w; 0 when disconnected.",
+                    x: "Optional float input x; 0 when disconnected.",
+                    y: "Optional integer input y; 0 when disconnected.",
+                    z: "Optional integer input z; 0 when disconnected."
                 };
-
-                Object.entries(typeMap).forEach(([name, type]) => {
-                    const input = node.addInput(name, type);
-                    if (input && labelMap[name]) {
-                        input.label = labelMap[name];
+                node.inputs?.forEach(input => {
+                    if (labels[input.name]) {
+                        input.label = labels[input.name];
+                        input.tooltip = tips[input.name];
                     }
                 });
 

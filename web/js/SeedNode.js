@@ -23,11 +23,14 @@ app.registerExtension({
                 if (!seedWidget) return;
 
                 // Add randomize button
-                node.addWidget("button", "🎲 Randomize", null, () => {
+                const randomizeWidget = node.addWidget("button", "🎲 Randomize", null, () => {
                     if (!seedWidget) return;
                     seedWidget.value = generateRandomSeed();
                     node.setDirtyCanvas(true);
                 });
+                if (randomizeWidget) {
+                    randomizeWidget.options = { ...randomizeWidget.options, tooltip: "Generate a new random seed for the next image or noise generation." };
+                }
 
                 node.computeSize();
                 node.setDirtyCanvas(true, true);

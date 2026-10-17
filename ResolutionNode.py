@@ -2,22 +2,18 @@ import math
 import re
 
 class ResolutionNode:
-    # Keep this list broad (superset) so the backend accepts any dropdown value the UI offers.
-    # JS will filter this list per group.
+    DESCRIPTION = (
+        "Choose a resolution preset or custom dimensions, snap to a pixel multiple, "
+        "and optionally cap output megapixels without upscaling."
+    )
+    OUTPUT_TOOLTIPS = (
+        "Effective output width after snapping and optional max-megapixel downscaling.",
+        "Effective output height after snapping and optional max-megapixel downscaling.",
+    )
+
+    # Backend superset of the frontend aspect-ratio groups.
     ALL_PRESETS = [
         "Custom",
-        # Qwen2512
-        "1328x1328 (1:1)", "1664x928 (16:9)", "928x1664 (9:16)",
-        "1472x1104 (4:3)", "1104x1472 (3:4)", "1584x1056 (3:2)", "1056x1584 (2:3)",
-        # ZiT
-        "1024x1024 (1:1)", "1152x896 (9:7)", "896x1152 (7:9)",
-        "1152x864 (4:3)", "864x1152 (3:4)", "1248x832 (3:2)",
-        "832x1248 (2:3)", "1280x720 (16:9)", "720x1280 (9:16)",
-        "1344x576 (21:9)", "576x1344 (9:21)",
-        "1280x1280 (1:1)", "1440x1120 (9:7)", "1120x1440 (7:9)",
-        "1472x1104 (4:3)", "1104x1472 (3:4)", "1536x1024 (3:2)",
-        "1024x1536 (2:3)", "1600x896 (16:9)", "896x1600 (9:16)",
-        "1680x720 (21:9)", "720x1680 (9:21)",
         # 1:1 (Square)
         "64x64", "128x128", "192x192", "256x256", "320x320", "384x384", "448x448", 
         "512x512", "640x640", "768x768", "1024x1024", "1536x1536", "2048x2048", "4096x4096",
@@ -50,46 +46,8 @@ class ResolutionNode:
         "4096x2160 (1.90:1 DCI 4K Flat)", "4096x1716 (2.39:1 DCI 4K Scope)",
     ]
 
-    QWEN2512_MAP = {
-        "1328x1328 (1:1)":  (1328, 1328),
-        "1664x928 (16:9)":  (1664,  928),
-        "928x1664 (9:16)":  ( 928, 1664),
-        "1472x1104 (4:3)":  (1472, 1104),
-        "1104x1472 (3:4)":  (1104, 1472),
-        "1584x1056 (3:2)":  (1584, 1056),
-        "1056x1584 (2:3)":  (1056, 1584),
-    }
-
-    # Lookup map for ZiT presets (keyed by exact label string)
-    ZIT_MAP = {
-        "1024x1024 (1:1)":  (1024, 1024),
-        "1152x896 (9:7)":   (1152,  896),
-        "896x1152 (7:9)":   ( 896, 1152),
-        "1152x864 (4:3)":   (1152,  864),
-        "864x1152 (3:4)":   ( 864, 1152),
-        "1248x832 (3:2)":   (1248,  832),
-        "832x1248 (2:3)":   ( 832, 1248),
-        "1280x720 (16:9)":  (1280,  720),
-        "720x1280 (9:16)":  ( 720, 1280),
-        "1344x576 (21:9)":  (1344,  576),
-        "576x1344 (9:21)":  ( 576, 1344),
-        "1280x1280 (1:1)":  (1280, 1280),
-        "1440x1120 (9:7)":  (1440, 1120),
-        "1120x1440 (7:9)":  (1120, 1440),
-        "1472x1104 (4:3)":  (1472, 1104),
-        "1104x1472 (3:4)":  (1104, 1472),
-        "1536x1024 (3:2)":  (1536, 1024),
-        "1024x1536 (2:3)":  (1024, 1536),
-        "1600x896 (16:9)":  (1600,  896),
-        "896x1600 (9:16)":  ( 896, 1600),
-        "1680x720 (21:9)":  (1680,  720),
-        "720x1680 (9:21)":  ( 720, 1680),
-    }
-
     GROUPS = [
         "Custom",
-        "Qwen2512",
-        "ZiT",
         "1:1 (Square)",
         "4:3 (Classic)",
         "3:2 (Photo)",
@@ -106,11 +64,12 @@ class ResolutionNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "aspect_group": (cls.GROUPS, {"default": "Custom"}),
-                "preset": (cls.ALL_PRESETS, {"default": "Custom"}),
-                "width": ("INT", {"default": 1024, "min": 16, "max": 8192, "step": 1}),
-                "height": ("INT", {"default": 1024, "min": 16, "max": 8192, "step": 1}),
-                "multiple_of": (["1", "2", "4", "8", "16", "28", "32", "64", "128"], {"default": "8"}),
+                "aspect_group": (cls.GROUPS, {"default": "Custom", "tooltip": "Select a family of aspect ratios to filter the preset list. Choose Custom for manual sizes."}),
+                "preset": (cls.ALL_PRESETS, {"default": "Custom", "tooltip": "Pick a named width × height preset, or Custom to enter your own dimensions."}),
+                "width": ("INT", {"default": 1024, "min": 16, "max": 8192, "step": 1, "tooltip": "Selected width in pixels before the megapixel cap. Changing it manually switches to Custom."}),
+                "height": ("INT", {"default": 1024, "min": 16, "max": 8192, "step": 1, "tooltip": "Selected height in pixels before the megapixel cap. Changing it manually switches to Custom."}),
+                "multiple_of": (["1", "2", "4", "8", "16", "28", "32", "64", "128"], {"default": "8", "tooltip": "Snap dimensions to a pixel multiple (often 8, 16, 32, or 64). The MP-capped output also follows this grid when possible."}),
+                "max_megapixels": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step": 0.01, "round": 0.01, "tooltip": "Maximum output area in millions of pixels. 0 disables the cap; smaller images are unchanged. Oversized images are downscaled while preserving aspect ratio as closely as possible."}),
             }
         }
 
@@ -195,32 +154,84 @@ class ResolutionNode:
         snapped = math.floor(value / step + 0.5) * step
         return max(step, min(8192, snapped))
 
-    def process(self, aspect_group, preset, width, height, multiple_of):
-        # Qwen2512 presets: override width/height from the map, bypass multiple_of snapping.
-        if preset in self.QWEN2512_MAP:
-            w, h = self.QWEN2512_MAP[preset]
-            return (w, h)
+    @staticmethod
+    def _limit_megapixels(width, height, multiple_of, max_megapixels):
+        """Cap area without upscaling, preserving ratio as closely as grid permits.
 
-        # ZiT presets: override width/height from the map, bypass multiple_of snapping.
-        if preset in self.ZIT_MAP:
-            w, h = self.ZIT_MAP[preset]
-            return (w, h)
+        The base dimensions remain independent of the cap. A zero cap, or one
+        at least as large as the base area, returns the dimensions unchanged.
+        """
+        width, height = int(width), int(height)
+        limit = float(max_megapixels or 0) * 1_000_000
+        if limit <= 0 or width * height <= limit:
+            return width, height
 
-        # A selected preset uses floor/ceil pair testing to preserve its ratio.
+        ratio = width / height
+        scale = math.sqrt(limit / (width * height))
+        target_width = width * scale
+        target_height = height * scale
+
+        def find_best(step):
+            # Explore the nearest grid points on both sides of the ideal size.
+            # The neighboring points also allow a closer ratio/area tradeoff.
+            base_w = math.floor(target_width / step)
+            base_h = math.floor(target_height / step)
+            width_centers = [base_w]
+            height_centers = [base_h]
+            if target_height < max(16, step):
+                width_centers.append(math.floor(min(width, limit / max(16, step)) / step))
+                height_centers.append(math.ceil(16 / step))
+            if target_width < max(16, step):
+                height_centers.append(math.floor(min(height, limit / max(16, step)) / step))
+                width_centers.append(math.ceil(16 / step))
+            width_steps = sorted({x for base in width_centers for x in range(max(1, base - 2), base + 4)})
+            height_steps = sorted({y for base in height_centers for y in range(max(1, base - 2), base + 4)})
+            best = None
+            for x in width_steps:
+                candidate_w = x * step
+                if candidate_w < 16 or candidate_w > width:
+                    continue
+                for y in height_steps:
+                    candidate_h = y * step
+                    if candidate_h < 16 or candidate_h > height:
+                        continue
+                    pixels = candidate_w * candidate_h
+                    if pixels > limit:
+                        continue
+                    ratio_error = math.log((candidate_w / candidate_h) / ratio)
+                    area_gap = (limit - pixels) / limit
+                    # The ratio matters more than a marginal area gain.
+                    score = (2 * ratio_error) ** 2 + area_gap ** 2
+                    key = (score, abs(ratio_error), area_gap)
+                    if best is None or key < best[0]:
+                        best = (key, candidate_w, candidate_h)
+            return (best[1], best[2]) if best else None
+
+        step = max(1, int(multiple_of))
+        result = find_best(step)
+        if result is None:
+            # For very small MP limits, even one full multiple may not fit.
+            # Honor the hard pixel cap instead of returning too many pixels.
+            result = find_best(1)
+        return result if result else (16, 16)
+
+    def process(self, aspect_group, preset, width, height, multiple_of, max_megapixels=0.0):
+        # Presets retain their aspect ratio when snapped to the requested multiple.
         if preset and preset != "Custom":
             target_dimensions = self._parse_preset_dimensions(preset)
             if target_dimensions:
                 target_width, target_height = target_dimensions
-                return self._snap_dimensions_closest_ratio(
-                    width,
-                    height,
-                    multiple_of,
-                    target_width,
-                    target_height,
+                width, height = self._snap_dimensions_closest_ratio(
+                    width, height, multiple_of, target_width, target_height,
                 )
+            else:
+                width = self._snap_dimension(width, multiple_of)
+                height = self._snap_dimension(height, multiple_of)
+        else:
+            # Manual dimensions have no ratio lock and snap independently.
+            width = self._snap_dimension(width, multiple_of)
+            height = self._snap_dimension(height, multiple_of)
 
-        # Custom mode has no ratio lock. Each dimension is validated independently.
-        return (
-            self._snap_dimension(width, multiple_of),
-            self._snap_dimension(height, multiple_of),
+        return self._limit_megapixels(
+            width, height, multiple_of, max_megapixels,
         )
