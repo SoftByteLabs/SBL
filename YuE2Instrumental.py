@@ -307,6 +307,16 @@ class YuE2Instrumental:
     @classmethod
     def _transfer(cls, abc):
         lines, records, vocal, ins, base, bpm, q_unit = cls._read_score(abc)
+        # Instrumental YuE2 scores commonly have no pitched Vocal notes, only
+        # rests and chord symbols.  They are already suitable for instrumental
+        # generation.  Return their ABC byte-for-byte: reserializing even an
+        # equivalent melody would replace native pitches with explicit
+        # accidentals, which can unnecessarily perturb score conditioning.
+        if not vocal["notes"]:
+            total_whole_notes = vocal["at"] / base
+            seconds = float(total_whole_notes / q_unit) * 60.0 / bpm
+            return abc, len(vocal["bars"]), bpm, seconds, 0, 0
+
         occupied = [(at, at + duration) for at, duration, _, _ in vocal["notes"]]
         merged = list(vocal["notes"])
         affected = 0
