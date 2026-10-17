@@ -1,0 +1,60 @@
+name: Publish SBL to Comfy Registry
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - pyproject.toml
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check whether version changed
+        id: version
+        env:
+          PREVIOUS_SHA: ${{ github.event.before }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import tomllib
+
+          with open('pyproject.toml', 'rb') as file:
+              current = tomllib.load(file)['project']['version']
+
+          previous_sha = os.environ['PREVIOUS_SHA']
+          previous_file = subprocess.run(
+              ['git', 'show', f'{previous_sha}:pyproject.toml'],
+              capture_output=True, text=True, check=False,
+          )
+          previous = (
+              tomllib.loads(previous_file.stdout)['project']['version']
+              if previous_file.returncode == 0 else None
+          )
+          changed = current != previous
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as file:
+              file.write(f'changed={str(changed).lower()}\n')
+          print(f'Previous version: {previous}; current version: {current}')
+          PY
+
+      - name: Publish to Comfy Registry
+        if: steps.version.outputs.changed == 'true'
+        uses: Comfy-Org/publish-node-action@v1
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
