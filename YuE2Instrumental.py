@@ -13,7 +13,8 @@ from fractions import Fraction
 class YuE2Instrumental:
     DESCRIPTION = (
         "Transfer pitched Vocal notes to YuE2's Ins melody voice, preserving timing "
-        "and chord symbols. Vocal takes priority wherever the two melodies overlap."
+        "and chord symbols. Vocal takes priority wherever the two melodies overlap. "
+        "Empty ABC returns zero numeric outputs and empty strings."
     )
     OUTPUT_TOOLTIPS = (
         "ABC with the Vocal melody transferred to Ins and the Vocal part replaced by rests; chord symbols are preserved.",
@@ -47,7 +48,7 @@ class YuE2Instrumental:
     def INPUT_TYPES(cls):
         return {"required": {
             "abc": ("STRING", {"multiline": True, "forceInput": True,
-                "tooltip": "Connect a native YuE2 two-voice ABC score. Transfers the Vocal melody to Ins, keeping pitches, note timing and chord symbols."}),
+                "tooltip": "Connect a native YuE2 two-voice ABC score. Transfers the Vocal melody to Ins, keeping pitches, note timing and chord symbols. Empty or whitespace-only input returns zero numbers and empty strings."}),
             "padding_seconds": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 30.0, "step": 0.1,
                 "tooltip": "Add 0–30 seconds to the calculated score length before rounding up the recommended maximum duration."}),
         }}
@@ -372,8 +373,11 @@ class YuE2Instrumental:
 
     @classmethod
     def process(cls, abc, padding_seconds):
+        # An empty upstream Generate ABC result is a valid no-op.  Keep all
+        # output types consistent with RETURN_TYPES and ignore padding when
+        # there is no score to measure.
         if not abc or not abc.strip():
-            raise ValueError("YuE2 Instrumental: ABC input is empty.")
+            return "", "", 0.0, 0.0, 0, 0.0, ""
         instrumental, bars, bpm, score_seconds, moved, affected = cls._transfer(abc)
         sections = cls._extract_sections(instrumental)
         lyrics = "\n".join(f"[{section}]" for section in sections)

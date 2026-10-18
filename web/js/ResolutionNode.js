@@ -1,7 +1,390 @@
 import { app } from "../../scripts/app.js";
 
+// Expose Swap as a live, UI-only button on a Subgraph when at least one
+// input belonging to an SBL Resolution node has been promoted. ComfyUI's
+// projected subgraph widgets are the execution-time values: writing only
+// to an inner Resolution widget would not update an exposed field.
+const RESOLUTION_TYPE = "SBL_Resolution";
+const SWAP_LABEL = "Swap width↔height";
+const RESOLUTION_FIELDS = new Set([
+    "aspect_group", "preset", "width", "height", "multiple_of", "max_megapixels",
+]);
+
+// Promoted Subgraph widgets are store-backed projections. ComfyUI currently
+// copies widget options to the projection but not the source widget's tooltip.
+// Keep fallbacks for restored workflows whose original node has not yet set up.
+const RESOLUTION_TOOLTIPS = {
+    aspect_group: "Select a family of aspect ratios to filter the preset list. Choose Custom for manual sizes.",
+    preset: "Pick a named width × height preset, or Custom to enter your own dimensions.",
+    width: "Selected width in pixels before the megapixel cap. Changing it manually switches to Custom.",
+    height: "Selected height in pixels before the megapixel cap. Changing it manually switches to Custom.",
+    multiple_of: "Snap dimensions to a pixel multiple (often 8, 16, 32, or 64). The MP-capped output also follows this grid when possible.",
+    max_megapixels: "Maximum output area in millions of pixels. 0 disables the cap; smaller images are unchanged. Oversized images are downscaled while preserving aspect ratio as closely as possible.",
+};
+
+function restoreProjectedTooltip(projected, inner, field) {
+    const source = resolutionWidget(inner, field);
+    const tooltip = source?.tooltip || source?.options?.tooltip || RESOLUTION_TOOLTIPS[field];
+    if (!tooltip) return;
+    if (projected.tooltip !== tooltip) projected.tooltip = tooltip;
+    // A projected widget's options are stored reactively by ComfyUI. Do not
+    // mutate that store from the host.widgets getter during canvas rendering.
+}
+
+// Read projected values directly from the host input's cached projection, not
+// host.widgets. A widgets getter can be reentrant if consulted from itself.
+function resolutionPreview(group) {
+    const values = {};
+    for (const [field, input] of group.fields) {
+        if (input._widget && input._widget.value !== undefined) {
+            values[field] = input._widget.value;
+        }
+    }
+    return group.inner.__sblResolutionPreview?.(values) ?? null;
+}
+
+function restoreProjectedMaxMpLabel(projected, group) {
+    projected.__sblPreviewGroup = group;
+    if (projected.__sblDynamicMaxMpLabel) return;
+    // Override only this projected object's display label. Do not change the
+    // input's stored label, since it would be stale after a reload or edit.
+    const originalLabel = Object.getOwnPropertyDescriptor(projected, "label");
+    if (originalLabel && !originalLabel.configurable) return;
+    Object.defineProperty(projected, "label", {
+        configurable: true,
+        enumerable: true,
+        get() {
+            const preview = resolutionPreview(this.__sblPreviewGroup);
+            if (!preview) return originalLabel?.get?.call(this) ?? "Max MP";
+            return preview.capped ? `Max MP (${preview.w}×${preview.h})` : "Max MP";
+        },
+        set(value) { originalLabel?.set?.call(this, value); },
+    });
+    Object.defineProperty(projected, "__sblDynamicMaxMpLabel", { value: true, configurable: true });
+}
+
+function decorateResolutionFields(widgets, state) {
+    for (const group of state.groups ?? []) {
+        for (const [field, input] of group.fields) {
+            // No widgetId getters here: a source widget can calculate its ID
+            // by accessing host.widgets and reentering this decoration.
+            const projected = widgets.find(widget => resolutionWidgetMatchesInput(widget, input));
+            if (!projected) continue;
+            restoreProjectedTooltip(projected, group.inner, field);
+            if (field === "max_megapixels") restoreProjectedMaxMpLabel(projected, group);
+        }
+    }
+}
+
+function resolutionWidget(node, name) {
+    return node.widgets?.find((widget) => widget.name === name);
+}
+
+function subgraphTargetFields(host, input, depth = 0) {
+    if (!host.subgraph || !input?._subgraphSlot || depth > 12) return [];
+    const result = [];
+    for (const linkId of input._subgraphSlot.linkIds ?? []) {
+        const graph = host.subgraph;
+        const link = graph.getLink?.(linkId) ?? graph.links?.get?.(linkId) ?? graph.links?.[linkId];
+        if (!link) continue;
+        const target = graph.getNodeById?.(link.target_id);
+        const targetInput = target?.inputs?.[link.target_slot];
+        if (!target || !targetInput) continue;
+        if (target.type === RESOLUTION_TYPE && RESOLUTION_FIELDS.has(targetInput.widget?.name)) {
+            result.push({ inner: target, field: targetInput.widget.name });
+        } else if (target.subgraph) {
+            result.push(...subgraphTargetFields(target, targetInput, depth + 1));
+        }
+    }
+    return result;
+}
+
+function promotedResolutions(host) {
+    const groups = new Map();
+    for (const input of host.inputs ?? []) {
+        if (!input._subgraphSlot) continue;
+        for (const { inner, field } of subgraphTargetFields(host, input)) {
+            let group = groups.get(inner);
+            if (!group) {
+                group = { inner, lastInput: input, fields: new Map() };
+                groups.set(inner, group);
+            }
+            group.lastInput = input; // host.inputs is the user's current display order.
+            group.fields.set(field, input);
+        }
+    }
+    return [...groups.values()];
+}
+
+function exposedResolutionWidget(host, input) {
+    return host.getWidgetFromSlot?.(input) ??
+        host.widgets?.find((widget) =>
+            (input.widgetId != null && widget.widgetId === input.widgetId) ||
+            (input.widgetId == null && widget.widgetId == null && widget.name === input.name)
+        );
+}
+
+function resolutionInputConnected(host, input) {
+    return input.link != null || host.isInputConnected?.(host.inputs.indexOf(input));
+}
+
+function swapPromotedResolution(host, group) {
+    const { inner, fields } = group;
+    const nativeSwap = resolutionWidget(inner, SWAP_LABEL);
+    if (typeof nativeSwap?.callback !== "function") return;
+
+    // Never pretend to change a value supplied by an outside connection.
+    // All four fields below can be modified by the native swap callback.
+    for (const name of ["width", "height", "aspect_group", "preset"]) {
+        const input = fields.get(name);
+        if (input && resolutionInputConnected(host, input)) return;
+    }
+
+    // Synchronize the values currently shown on the outer Subgraph with the
+    // inner node before invoking its existing Swap logic. Non-exposed fields
+    // remain local to the inner Resolution node.
+    for (const [field, input] of fields) {
+        if (resolutionInputConnected(host, input)) continue;
+        const outer = exposedResolutionWidget(host, input);
+        const inside = resolutionWidget(inner, field);
+        if (outer && inside) inside.value = outer.value;
+    }
+    nativeSwap.callback();
+    for (const name of ["width", "height", "aspect_group", "preset"]) {
+        const input = fields.get(name);
+        if (!input) continue;
+        const outer = exposedResolutionWidget(host, input);
+        const inside = resolutionWidget(inner, name);
+        if (outer && inside) outer.value = inside.value;
+    }
+    inner.setDirtyCanvas?.(true, true);
+    host.setDirtyCanvas?.(true, true);
+}
+
+// This runs from SubgraphNode.widgets' getter. Never read widget.widgetId
+// directly here: BaseWidget.widgetId reads node.widgets to check uniqueness,
+// which would recursively invoke this getter until the call stack overflows.
+function resolutionWidgetMatchesInput(widget, input) {
+    if (!widget || !input) return false;
+    if (widget === input._widget) return true;
+    // Older Comfy builds and test doubles can store widgetId directly. Inspect
+    // an *own data property* without invoking an inherited/accessor getter.
+    const ownId = Object.getOwnPropertyDescriptor(widget, "widgetId");
+    if (ownId && Object.hasOwn(ownId, "value") && input.widgetId != null) {
+        return ownId.value === input.widgetId;
+    }
+    // Legacy fallback only when the input has no projected widget identifier.
+    return !input.widgetId && !input._widget && widget.name === input.name;
+}
+
+// ComfyUI SubgraphNode.widgets can be a computed getter. Moving an item in
+// the returned array doesn't survive redraw, so wrap the getter instead.
+function installResolutionOrder(host, state) {
+    const original = Object.getOwnPropertyDescriptor(host, "widgets");
+    if (!original?.get || !original.configurable) return;
+    Object.defineProperty(host, "widgets", {
+        ...original,
+        get() {
+            const list = original.get.call(this);
+            decorateResolutionFields(list, state);
+            if (!state.placements.length) return list;
+            const buttons = new Set(state.buttons);
+            const ordered = [];
+            const placed = new Set();
+            for (const widget of list) {
+                if (buttons.has(widget)) continue;
+                ordered.push(widget);
+                for (const { input, button } of state.placements) {
+                    if (resolutionWidgetMatchesInput(widget, input)) {
+                        ordered.push(button);
+                        placed.add(button);
+                    }
+                }
+            }
+            for (const button of state.buttons) {
+                if (!placed.has(button)) ordered.push(button);
+            }
+            return ordered;
+        },
+    });
+    state.restoreOrder = () => Object.defineProperty(host, "widgets", original);
+}
+
+function positionResolutionButtons(host, state) {
+    if (state.restoreOrder || !Array.isArray(host.widgets)) return;
+    const widgets = host.widgets;
+    for (const button of state.buttons) {
+        const index = widgets.indexOf(button);
+        if (index !== -1) widgets.splice(index, 1);
+    }
+    for (const { input, button } of state.placements) {
+        const index = widgets.findIndex((widget) => resolutionWidgetMatchesInput(widget, input));
+        widgets.splice(index === -1 ? widgets.length : index + 1, 0, button);
+    }
+}
+
+// As with the SBL Seed button, an outdated projected-widget minimum can
+// leave a large unshrinkable blank section below the last visible field.
+function compactResolutionMinimum(host, stock) {
+    const widgets = host.getLayoutWidgets?.() ?? host.widgets ?? [];
+    if (!widgets.length) return stock;
+    const visible = widgets.filter((widget) => host.isWidgetRowVisible?.(widget) !== false);
+    if (!visible.length) return stock;
+    let bottom = 0;
+    for (let i = 0; i < visible.length; i++) {
+        const w = visible[i];
+        if (!Number.isFinite(w.y) || w.y < 0 || (i && w.y <= visible[i - 1].y)) return stock;
+        let height = w.computedHeight;
+        if (!Number.isFinite(height) || height <= 0) {
+            height = (w.computeSize?.(stock[0])?.[1] ??
+                w.computeLayoutSize?.(host)?.minHeight ?? 20) + 4;
+        }
+        if (!Number.isFinite(height) || height <= 0) return stock;
+        bottom = Math.max(bottom, w.y + height);
+    }
+    const bareInputs = (host.inputs ?? []).filter((input) =>
+        !input.widget && !input.widgetId && !input._widget
+    );
+    const sockets = [...bareInputs, ...(host.outputs ?? [])];
+    const socketBottom = Math.max(0, ...sockets.map((socket, i) =>
+        Number.isFinite(socket.pos?.[1]) ? socket.pos[1] + 14 : (i + 1) * 24 + 14
+    ));
+    const minimum = Math.max(60, bottom + 12, socketBottom + 10);
+    return minimum < stock[1] ? [stock[0], minimum] : stock;
+}
+
+function installResolutionSizing(host, state) {
+    const original = host.computeSize;
+    if (typeof original !== "function") return;
+    const previous = Object.getOwnPropertyDescriptor(host, "computeSize");
+    host.computeSize = function (...args) {
+        const result = original.apply(this, args);
+        if (!state.placements.length || !Array.isArray(result)) return result;
+        const compact = compactResolutionMinimum(this, result);
+        if (compact !== result) result[1] = compact[1];
+        return result;
+    };
+    state.restoreSizing = () => {
+        if (previous) Object.defineProperty(host, "computeSize", previous);
+        else delete host.computeSize;
+    };
+}
+
+function shrinkResolutionAfterLayout(host, state) {
+    if (state.didCompact || state.compactionScheduled || !state.buttons.length) return;
+    state.compactionScheduled = true;
+    setTimeout(() => {
+        state.compactionScheduled = false;
+        if (state.removed || !state.buttons.length) return;
+        const minimum = host.computeSize?.();
+        if (!minimum || !host.size) return;
+        if (!(host.getLayoutWidgets?.() ?? host.widgets ?? []).some((w) => Number.isFinite(w.y) && w.y > 0)) return;
+        state.didCompact = true;
+        if (host.size[1] > minimum[1] + 12) {
+            host.setSize?.([host.size[0], minimum[1]]);
+            host.setDirtyCanvas?.(true, true);
+        }
+    }, 150);
+}
+
+function syncResolutionButtons(host) {
+    const state = host.__sblResolutionSwap;
+    if (!state) return;
+    const groups = promotedResolutions(host);
+    const signature = groups.map(({ inner, lastInput, fields }) =>
+        `${inner.id}:${host.inputs.indexOf(lastInput)}:${[...fields].map(([key, input]) => `${key}:${host.inputs.indexOf(input)}`).join(",")}`
+    ).join("|");
+    if (state.signature === signature) {
+        positionResolutionButtons(host, state);
+        return;
+    }
+    state.groups = groups;
+    state.signature = signature;
+    for (const button of state.buttons) host.removeWidget?.(button);
+    state.buttons = [];
+    state.placements = [];
+    for (const [index, group] of groups.entries()) {
+        const suffix = groups.length > 1 ? ` · #${group.inner.id ?? index + 1}` : "";
+        const button = host.addWidget("button", SWAP_LABEL + suffix, null, () =>
+            swapPromotedResolution(host, group)
+        );
+        button.tooltip = "Swap the width and height of this Resolution node. Exposed values update immediately.";
+        button.options = { ...button.options, tooltip: button.tooltip, serialize: false };
+        button.serialize = false;
+        state.buttons.push(button);
+        state.placements.push({ input: group.lastInput, button });
+    }
+    positionResolutionButtons(host, state);
+    if (state.buttons.length) {
+        const minimum = host.computeSize?.();
+        if (minimum && host.size && host.setSize) {
+            host.setSize([Math.max(host.size[0], minimum[0]), Math.max(host.size[1], minimum[1])]);
+        }
+        shrinkResolutionAfterLayout(host, state);
+    }
+    host.setDirtyCanvas?.(true, true);
+}
+
+function watchResolutionSubgraph(host) {
+    if (!host?.subgraph || host.__sblResolutionSwap) return;
+    const state = host.__sblResolutionSwap = {
+        signature: null, buttons: [], placements: [], groups: [], scheduled: false, removed: false,
+    };
+    installResolutionOrder(host, state);
+    installResolutionSizing(host, state);
+    const controller = new AbortController();
+    const schedule = () => {
+        if (state.scheduled) return;
+        state.scheduled = true;
+        setTimeout(() => {
+            state.scheduled = false;
+            if (!state.removed) syncResolutionButtons(host);
+        }, 0);
+    };
+    for (const eventName of ["widget-promoted", "widget-demoted", "input-added", "removing-input", "inputs-reordered"]) {
+        host.subgraph.events?.addEventListener?.(eventName, schedule, { signal: controller.signal });
+    }
+    for (const methodName of ["onConfigure", "onConnectionsChange"]) {
+        const previous = host[methodName];
+        host[methodName] = function (...args) {
+            const result = previous?.apply(this, args);
+            schedule();
+            return result;
+        };
+    }
+    const previousRemoved = host.onRemoved;
+    host.onRemoved = function (...args) {
+        state.removed = true;
+        controller.abort();
+        state.restoreOrder?.();
+        state.restoreSizing?.();
+        return previousRemoved?.apply(this, args);
+    };
+    schedule();
+}
+
+function visitResolutionSubgraphs(graph) {
+    for (const node of graph?.nodes ?? graph?._nodes ?? []) {
+        if (node.subgraph) {
+            watchResolutionSubgraph(node);
+            visitResolutionSubgraphs(node.subgraph);
+        }
+    }
+}
+
 app.registerExtension({
     name: "SBL.ResolutionNode",
+    setup() {
+        app.canvas?.canvas?.addEventListener?.("subgraph-converted", (event) => {
+            watchResolutionSubgraph(event.detail?.subgraphNode);
+        });
+    },
+    nodeCreated(node) {
+        if (node.subgraph) watchResolutionSubgraph(node);
+    },
+    afterConfigureGraph() {
+        visitResolutionSubgraphs(app.rootGraph ?? app.graph);
+    },
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name !== "SBL_Resolution") return;
 
@@ -142,6 +525,36 @@ app.registerExtension({
 
                 const step = Math.max(1, parseInt(multiple, 10) || 1);
                 return findBest(step) || findBest(1) || { w: 16, h: 16 };
+            };
+
+            // Exposed Subgraph controls are separate from the inner node's
+            // values. Compute the preview from those values without modifying
+            // either widget or triggering callbacks during canvas drawing.
+            node.__sblResolutionPreview = (overrides = {}) => {
+                const value = (name) => overrides[name] ?? getWidget(name)?.value;
+                const multiple = value("multiple_of") ?? "8";
+                let width = Number(value("width"));
+                let height = Number(value("height"));
+                if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+                const preset = value("preset");
+                if (preset && preset !== "Custom") {
+                    const dimensions = parsePreset(preset);
+                    if (dimensions) {
+                        const snapped = snapDimensionsToClosestRatio(
+                            width, height, multiple, dimensions.w / dimensions.h
+                        );
+                        width = snapped.w;
+                        height = snapped.h;
+                    } else {
+                        width = snapToMultiple(width, multiple);
+                        height = snapToMultiple(height, multiple);
+                    }
+                } else {
+                    width = snapToMultiple(width, multiple);
+                    height = snapToMultiple(height, multiple);
+                }
+                const effective = limitMegapixels(width, height, multiple, value("max_megapixels"));
+                return { ...effective, capped: effective.w !== width || effective.h !== height };
             };
 
             const getEffectiveDimensions = () => {

@@ -12,11 +12,11 @@ Keep positive and negative text prompts together, then connect either string out
 
 ### Resolution
 
-Pick common image dimensions from aspect-ratio groups (square, classic, photo, widescreen, ultrawide, phone and cinema) or enter custom width and height. Dimensions are snapped to `multiple_of`, which helps match the grid requirements of image and video models. The **Swap width↔height** button exchanges the orientation.
+Pick common image dimensions from aspect-ratio groups (square, classic, photo, widescreen, ultrawide, phone and cinema) or enter custom width and height. Dimensions are snapped to `multiple_of`, which helps match the grid requirements of image and video models. The **Swap width↔height** button exchanges the orientation. When you expose fields from the Resolution node on a ComfyUI Subgraph, an outer **Swap width↔height** button appears directly below the **last exposed field belonging to that Resolution node**, and follows it as you reorder the Subgraph controls. The button changes the Resolution dimensions immediately, including promoted width and height values if present. If an externally connected value would be overwritten by the swap, the button leaves it unchanged. The outer Subgraph can shrink to its visible controls without extra blank space below the button.
 
 **Fields:** `aspect_group` filters the available `preset` choices. `width` and `height` are selected dimensions before any megapixel limit. `multiple_of` determines pixel-grid snapping. `max_megapixels` is the maximum output area, in millions of pixels. Use **0** for no cap.
 
-If the snapped resolution already fits the megapixel limit, the output stays unchanged. Otherwise, the node scales down to an area as close to the limit as possible while keeping the original aspect ratio as closely as the pixel grid permits. It never upscales to reach the limit. The selected width and height stay intact when changing the cap, and the cap field previews the effective output dimensions. For very small caps, a 1-pixel grid may be used if the selected multiple can't fit below the limit.
+If the snapped resolution already fits the megapixel limit, the output stays unchanged. Otherwise, the node scales down to an area as close to the limit as possible while keeping the original aspect ratio as closely as the pixel grid permits. It never upscales to reach the limit. The selected width and height stay intact when changing the cap. On the outer Subgraph, the exposed megapixel field is labeled **Max MP (W×H)** when the cap reduces the selected dimensions, showing the effective output size; otherwise its label is **Max MP**. Exposed Resolution fields retain their hover tooltips. For very small caps, a 1-pixel grid may be used if the selected multiple can't fit below the limit.
 
 **Outputs:** effective `width` and `height` as integers.
 
@@ -39,7 +39,7 @@ The four optional sockets are Python-declared inputs and remain disconnected unl
 
 Produce a numeric seed and a compatible ComfyUI random-noise object. Enter `seed` manually for reproducible sampling, or click **🎲 Randomize** to generate another seed.
 
-**Field:** `seed` is a nonnegative integer from 0 through **9,007,199,254,740,991** (`2^53 - 1`), the exact-integer range supported by JavaScript. This prevents silent rounding of extremely large seeds in ComfyUI's frontend. The Randomize button continues to choose seeds below `2^50`. **Outputs:** integer `seed` and a `NOISE` object using that seed.
+**Field:** `seed` is a nonnegative integer from 0 through **9,007,199,254,740,991** (`2^53 - 1`), the exact-integer range supported by JavaScript. This prevents silent rounding of extremely large seeds in ComfyUI's frontend. The Randomize button continues to choose seeds below `2^50`. When `seed` is promoted to the outside of a ComfyUI Subgraph, a matching **🎲 Randomize** button appears **directly below the exposed seed field** and follows it when you reorder the subgraph fields. The outer subgraph also sizes itself to the visible controls, so an outdated minimum height cannot leave an unshrinkable blank area below the button and fields. Clicking it immediately changes that subgraph instance’s exposed seed, which then stays fixed until manually changed again. Each subgraph instance has its own seed; if an outside connection supplies the seed, the button leaves the connected value alone. The exposed seed field retains its hover tooltip. **Outputs:** integer `seed` and a `NOISE` object using that seed.
 
 ### Math Scratchpad
 
@@ -53,7 +53,7 @@ Prepare a YuE2 ABC music score for **instrumental** generation. The node now **t
 
 It supports YuE2's usual two-voice ABC notation, including standard note lengths, ties, simple key/meter changes, quoted chord symbols, multi-measure rests and section comments. Unsupported constructs, such as tuplets or simultaneous note chords, produce an explicit error rather than a misleading conversion. Use the original score if you need to make a manual adjustment. It also reads recognized standalone ABC section comments such as `% intro`, `% verse` and `% chorus` to create section-only Lyrics tags without sung words.
 
-The node estimates score length from the ABC time signature, tempo and bar count, then generates an upward-rounded maximum duration that includes any requested padding. The generated maximum is a **ceiling**, not a promise of exact song length.
+The node estimates score length from the ABC time signature, tempo and bar count, then generates an upward-rounded maximum duration that includes any requested padding. The generated maximum is a **ceiling**, not a promise of exact song length. **Empty or whitespace-only ABC inputs are treated as a no-op:** all numeric outputs are `0` and all string outputs are empty, regardless of `padding_seconds`. Invalid nonempty ABC still produces an explicit validation error.
 
 **Fields:** `abc` accepts an incoming ABC string; `padding_seconds` adds 0 to 30 seconds to the recommended ceiling. The `info` output reports Vocal notes transferred and Ins notes affected by overlaps. **Outputs:** `abc` (instrumental-ready score), `lyrics` (section tags), `max_duration` (rounded duration ceiling), `score_seconds` (theoretical duration), `bars`, `bpm` and `info` (diagnostics). Connect `abc`, `lyrics` and `max_duration` to the corresponding YuE2 generation inputs.
 
