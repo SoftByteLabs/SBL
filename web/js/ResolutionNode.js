@@ -143,19 +143,32 @@ function swapPromotedResolution(host, group) {
     // Synchronize the values currently shown on the outer Subgraph with the
     // inner node before invoking its existing Swap logic. Non-exposed fields
     // remain local to the inner Resolution node.
-    for (const [field, input] of fields) {
-        if (resolutionInputConnected(host, input)) continue;
-        const outer = exposedResolutionWidget(host, input);
-        const inside = resolutionWidget(inner, field);
-        if (outer && inside) inside.value = outer.value;
+    const wasProgrammatic = inner.__res_isProgrammatic;
+    inner.__res_isProgrammatic = true;
+    try {
+        for (const [field, input] of fields) {
+            if (resolutionInputConnected(host, input)) continue;
+            const outer = exposedResolutionWidget(host, input);
+            const inside = resolutionWidget(inner, field);
+            if (outer && inside && inside.value !== outer.value) inside.value = outer.value;
+        }
+    } finally {
+        inner.__res_isProgrammatic = wasProgrammatic;
     }
     nativeSwap.callback();
-    for (const name of ["width", "height", "aspect_group", "preset"]) {
-        const input = fields.get(name);
-        if (!input) continue;
-        const outer = exposedResolutionWidget(host, input);
-        const inside = resolutionWidget(inner, name);
-        if (outer && inside) outer.value = inside.value;
+    // Updating projected dimensions can fire their normal widget callbacks.
+    // These are part of Swap, not manual edits, so keep the selected preset.
+    inner.__res_isProgrammatic = true;
+    try {
+        for (const name of ["width", "height"]) {
+            const input = fields.get(name);
+            if (!input) continue;
+            const outer = exposedResolutionWidget(host, input);
+            const inside = resolutionWidget(inner, name);
+            if (outer && inside && outer.value !== inside.value) outer.value = inside.value;
+        }
+    } finally {
+        inner.__res_isProgrammatic = wasProgrammatic;
     }
     inner.setDirtyCanvas?.(true, true);
     host.setDirtyCanvas?.(true, true);
@@ -767,7 +780,8 @@ app.registerExtension({
                 };
 
 
-                // Swap dimensions. Keep any selected aspect group when applicable.
+                // Swap only the dimensions. The selected group and preset are
+                // the user's choices and must not be reset to Custom.
                 const swapWidget = node.addWidget("button", "Swap width↔height", null, () => {
                     if (!widthWidget || !heightWidget) return;
                     withProgrammatic(() => {
@@ -778,19 +792,6 @@ app.registerExtension({
                         heightWidget.prevValue = heightWidget.value;
                     });
                     node.__res_targetRatio = widthWidget.value / heightWidget.value;
-
-                    const options = PRESET_GROUPS[aspectGroupWidget?.value] || [];
-                    const match = options.find(label => {
-                        const parsed = parsePreset(label);
-                        return parsed &&
-                            parsed.w === widthWidget.value &&
-                            parsed.h === heightWidget.value;
-                    });
-                    if (match && presetWidget) {
-                        withProgrammatic(() => { presetWidget.value = match; });
-                    } else {
-                        setCustomIfManual();
-                    }
                     pushDimensionWidget(widthWidget);
                     node.setDirtyCanvas(true);
                 });
